@@ -3,7 +3,9 @@ import json
 import re
 import logging
 import time
+import threading
 import urllib.request
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -328,6 +330,23 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def start_health_server():
+    """啟動簡單的 HTTP 健康檢查伺服器，避免 Render 誤判 Timeout"""
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, format, *args):
+            pass  # 靜音 log
+
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"健康檢查伺服器啟動於 port {port}")
+
+
 def clear_old_connections():
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
@@ -338,6 +357,7 @@ def clear_old_connections():
 
 
 def main():
+    start_health_server()
     clear_old_connections()
     time.sleep(3)
 
