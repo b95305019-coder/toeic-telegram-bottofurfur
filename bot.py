@@ -17,7 +17,7 @@ SHEETS_ID = "1XopniplcnUMrojQ8AAemBLUp_WRIXIrAN2G-Kfr5vu8"
 SHEET_NAME = "工作表1"
 
 # Google Sheets 認證
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
 
 # ConversationHandler 狀態
 ANSWERING = 1
@@ -73,9 +73,9 @@ def get_latest_articles(count=4):
     except Exception as e:
         raise Exception(f"get_sheets_client failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
     try:
-        sheet = client.open_by_key(SHEETS_ID).worksheet(SHEET_NAME)
+        sheet = client.open_by_url(f"https://docs.google.com/spreadsheets/d/{SHEETS_ID}/edit").worksheet(SHEET_NAME)
     except Exception as e:
-        raise Exception(f"open_by_key failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+        raise Exception(f"open_by_url failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
     try:
         rows = sheet.get_all_records()
     except Exception as e:
