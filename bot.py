@@ -33,15 +33,22 @@ def get_sheets_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if not creds_json:
         raise ValueError("GOOGLE_CREDENTIALS 環境變數未設定")
-    # 支援 Base64 編碼或原始 JSON 兩種格式
     creds_str = creds_json.strip()
+    creds_dict = None
     try:
-        # 先嘗試 Base64 解碼
         decoded = base64.b64decode(creds_str).decode("utf-8")
         creds_dict = json.loads(decoded)
     except Exception:
-        # 退回直接解析 JSON
-        creds_dict = json.loads(creds_str)
+        pass
+    if creds_dict is None:
+        try:
+            creds_dict = json.loads(creds_str)
+        except Exception:
+            pass
+    if creds_dict and "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    if creds_dict is None:
+        raise ValueError("無法解析 GOOGLE_CREDENTIALS")
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
