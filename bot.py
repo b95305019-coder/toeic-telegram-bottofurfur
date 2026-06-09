@@ -171,8 +171,9 @@ async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ANSWERING
 
     except Exception as e:
-        logger.error(f"quiz_start error: {e}")
-        await update.message.reply_text(f"❌ 載入失敗：{e}")
+        import traceback
+        logger.error(f"quiz_start error: {e}\n{traceback.format_exc()}")
+        await update.message.reply_text(f"❌ 載入失敗：{type(e).__name__}: {e}")
         return ConversationHandler.END
 
 
