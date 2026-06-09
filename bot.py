@@ -67,9 +67,19 @@ def parse_json_data(raw):
 
 def get_latest_articles(count=4):
     """從 Google Sheets 取得最新幾篇文章"""
-    client = get_sheets_client()
-    sheet = client.open_by_key(SHEETS_ID).worksheet(SHEET_NAME)
-    rows = sheet.get_all_records()
+    import traceback
+    try:
+        client = get_sheets_client()
+    except Exception as e:
+        raise Exception(f"get_sheets_client failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+    try:
+        sheet = client.open_by_key(SHEETS_ID).worksheet(SHEET_NAME)
+    except Exception as e:
+        raise Exception(f"open_by_key failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
+    try:
+        rows = sheet.get_all_records()
+    except Exception as e:
+        raise Exception(f"get_all_records failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
 
     # 過濾有 JSON_Data 的行，取最新幾篇
     valid = [r for r in rows if r.get("JSON_Data", "").strip()]
