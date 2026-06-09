@@ -2,6 +2,8 @@ import os
 import json
 import re
 import logging
+import time
+import urllib.request
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -16,10 +18,11 @@ CHAT_ID = int(os.environ.get("CHAT_ID", "7672912526"))
 SHEETS_ID = "1XopniplcnUMrojQ8AAemBLUp_WRIXIrAN2G-Kfr5vu8"
 SHEET_NAME = "工作表1"
 
-# Google Sheets 認證
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+]
 
-# ConversationHandler 狀態
 ANSWERING = 1
 # ─────────────────────────────────────────────────
 
@@ -28,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 
 def get_sheets_client():
-    """取得 Google Sheets 客戶端"""
     import base64
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if not creds_json:
@@ -54,7 +56,6 @@ def get_sheets_client():
 
 
 def parse_json_data(raw):
-    """解析 JSON_Data 欄位"""
     if not raw:
         return None
     try:
@@ -66,14 +67,15 @@ def parse_json_data(raw):
 
 
 def get_latest_articles(count=4):
-    """從 Google Sheets 取得最新幾篇文章"""
     import traceback
     try:
         client = get_sheets_client()
     except Exception as e:
         raise Exception(f"get_sheets_client failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
     try:
-        sheet = client.open_by_url(f"https://docs.google.com/spreadsheets/d/{SHEETS_ID}/edit").worksheet(SHEET_NAME)
+        sheet = client.open_by_url(
+            f"https://docs.google.com/spreadsheets/d/{SHEETS_ID}/edit"
+        ).worksheet(SHEET_NAME)
     except Exception as e:
         raise Exception(f"open_by_url failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
     try:
@@ -81,10 +83,9 @@ def get_latest_articles(count=4):
     except Exception as e:
         raise Exception(f"get_all_records failed: {type(e).__name__}: {e}\n{traceback.format_exc()}")
 
-    # 過濾有 JSON_Data 的行，取最新幾篇
     valid = [r for r in rows if r.get("JSON_Data", "").strip()]
     latest = valid[-count:] if len(valid) >= count else valid
-    latest.reverse()  # 最新的排前面
+    latest.reverse()
 
     articles = []
     for row in latest:
@@ -100,7 +101,6 @@ def get_latest_articles(count=4):
 
 
 def format_question(q_idx, q, total):
-    """格式化題目訊息"""
     letters = ["A", "B", "C", "D"]
     lines = [f"📝 *第 {q_idx+1} 題（共 {total} 題）*\n"]
     lines.append(f"{q['q']}\n")
@@ -110,7 +110,6 @@ def format_question(q_idx, q, total):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """開始指令"""
     await update.message.reply_text(
         "👋 哈囉！我是你的多益練習 Bot！\n\n"
         "指令列表：\n"
@@ -121,14 +120,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def articles_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """列出今日文章"""
     await update.message.reply_text("⏳ 載入文章中...")
     try:
         articles = get_latest_articles(4)
         if not articles:
             await update.message.reply_text("目前還沒有文章，請稍後再試！")
             return
-
         lines = ["📰 *今日文章列表*\n"]
         for i, a in enumerate(articles, 1):
             lines.append(f"{i}. {a['title']}")
@@ -139,8 +136,44 @@ async def articles_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 載入失敗：{e}")
 
 
+async def send_article_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """傳送文章內容供閱讀"""
+    articles = context.user_data["articles"]
+    idx = context.user_data["current_article_idx"]
+    article = articles[idx]
+
+    # 傳送文章標題
+    await update.message.reply_text(
+        f"📰 *文章 {idx+1}/{len(articles)}*\n\n*{article['title']}*",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    # 傳送文章內容（分段避免超過 4096 字元限制）
+    content_en = article.get("contentEn", "")
+    if content_en:
+        chunks = [content_en[i:i+3000] for i in range(0, len(content_en), 3000)]
+        for chunk in chunks:
+            await update.message.reply_text(chunk)
+    else:
+        await update.message.reply_text("（無文章內容）")
+
+    # 計算這篇文章有幾題
+    q_count = sum(
+        1 for q in context.user_data["questions"]
+        if q["article_title"] == article["title"]
+    )
+
+    keyboard = [["✅ 開始答題"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text(
+        f"📖 閱讀完畢後，按下方按鈕開始回答這篇的 *{q_count} 題*！",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+
 async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """開始測驗"""
     await update.message.reply_text("⏳ 載入題目中...")
     try:
         articles = get_latest_articles(4)
@@ -148,7 +181,6 @@ async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("目前還沒有文章，請稍後再試！")
             return ConversationHandler.END
 
-        # 收集所有題目
         all_questions = []
         for a in articles:
             for q in a.get("questions", []):
@@ -164,20 +196,22 @@ async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         # 儲存狀態
+        context.user_data["articles"] = articles
         context.user_data["questions"] = all_questions
         context.user_data["current"] = 0
         context.user_data["correct"] = 0
         context.user_data["total"] = len(all_questions)
+        context.user_data["current_article_idx"] = 0
 
         await update.message.reply_text(
             f"🎯 今日共 *{len(all_questions)} 題*，來自 {len(articles)} 篇文章！\n\n"
-            "請用 A / B / C / D 回答每一題。\n"
+            "流程：先閱讀文章 → 按「✅ 開始答題」→ 回答題目\n"
             "輸入 /stop 可以中途結束。",
             parse_mode="Markdown"
         )
 
-        # 傳送第一題
-        await send_question(update, context)
+        # 先顯示第一篇文章
+        await send_article_content(update, context)
         return ANSWERING
 
     except Exception as e:
@@ -188,29 +222,26 @@ async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """傳送當前題目"""
     questions = context.user_data["questions"]
     current = context.user_data["current"]
     total = context.user_data["total"]
     q = questions[current]
-
-    # 顯示文章標題（每篇第一題時顯示）
-    msg = ""
-    if current == 0 or questions[current]["article_title"] != questions[current-1]["article_title"]:
-        msg += f"📰 *{q['article_title']}*\n\n"
-
-    msg += format_question(current, q, total)
-
+    msg = format_question(current, q, total)
     keyboard = [["A", "B"], ["C", "D"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=reply_markup)
 
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """處理答案"""
-    user_input = update.message.text.strip().upper()
+    user_input = update.message.text.strip()
     letters = ["A", "B", "C", "D"]
 
+    # 處理「開始答題」按鈕
+    if user_input == "✅ 開始答題":
+        await send_question(update, context)
+        return ANSWERING
+
+    user_input = user_input.upper()
     if user_input not in letters:
         await update.message.reply_text("請輸入 A、B、C 或 D！")
         return ANSWERING
@@ -221,43 +252,47 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     correct_idx = q["ans"]
     user_idx = letters.index(user_input)
 
-    # 判斷對錯
     if user_idx == correct_idx:
         context.user_data["correct"] += 1
-        feedback = f"✅ *正確！*"
+        feedback = "✅ *正確！*"
     else:
         correct_letter = letters[correct_idx]
         feedback = f"❌ *錯誤！*\n正確答案是 ({correct_letter}) {q['options'][correct_idx]}"
 
     await update.message.reply_text(feedback, parse_mode="Markdown")
 
-    # 下一題或結束
     context.user_data["current"] += 1
-    if context.user_data["current"] >= context.user_data["total"]:
+    next_idx = context.user_data["current"]
+
+    if next_idx >= context.user_data["total"]:
         return await quiz_end(update, context)
+
+    # 檢查是否換到新文章
+    prev_title = questions[next_idx - 1]["article_title"]
+    next_title = questions[next_idx]["article_title"]
+
+    if prev_title != next_title:
+        context.user_data["current_article_idx"] += 1
+        await send_article_content(update, context)
     else:
         await send_question(update, context)
-        return ANSWERING
+
+    return ANSWERING
 
 
 async def quiz_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """測驗結束"""
     correct = context.user_data["correct"]
     total = context.user_data["total"]
     pct = correct / total if total > 0 else 0
 
     if pct == 1.0:
-        emoji = "🎉"
-        msg = "滿分！太厲害了！"
+        emoji, msg = "🎉", "滿分！太厲害了！"
     elif pct >= 0.75:
-        emoji = "🌟"
-        msg = "表現很好！繼續保持！"
+        emoji, msg = "🌟", "表現很好！繼續保持！"
     elif pct >= 0.5:
-        emoji = "👍"
-        msg = "不錯喔！再接再厲！"
+        emoji, msg = "👍", "不錯喔！再接再厲！"
     else:
-        emoji = "💪"
-        msg = "繼續加油！明天再挑戰！"
+        emoji, msg = "💪", "繼續加油！明天再挑戰！"
 
     await update.message.reply_text(
         f"{emoji} *測驗完成！*\n\n"
@@ -272,7 +307,6 @@ async def quiz_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stop_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """中途停止測驗"""
     correct = context.user_data.get("correct", 0)
     current = context.user_data.get("current", 0)
     await update.message.reply_text(
@@ -285,7 +319,7 @@ async def stop_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *使用說明*\n\n"
-        "/quiz - 開始今日測驗（一題一題作答）\n"
+        "/quiz - 開始今日測驗（先閱讀文章再答題）\n"
         "/articles - 查看今日文章標題\n"
         "/stop - 中途停止測驗\n"
         "/help - 顯示此說明\n\n"
@@ -295,8 +329,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def clear_old_connections():
-    """啟動前清除舊的 webhook/連線"""
-    import urllib.request
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
         urllib.request.urlopen(url, timeout=10)
@@ -307,8 +339,7 @@ def clear_old_connections():
 
 def main():
     clear_old_connections()
-    import time
-    time.sleep(3)  # 等待舊連線完全關閉
+    time.sleep(3)
 
     app = (
         Application.builder()
@@ -319,7 +350,6 @@ def main():
         .build()
     )
 
-    # 對答 ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("quiz", quiz_start)],
         states={
