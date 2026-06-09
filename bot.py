@@ -13,7 +13,7 @@ from google.oauth2.service_account import Credentials
 # ── 設定 ──────────────────────────────────────────
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = int(os.environ.get("CHAT_ID", "7672912526"))
-SHEETS_ID = "1XopniplcnUMrojQ8AAemBLUp_WRlXlrAN2G-Kfr5vu8"
+SHEETS_ID = "1XopniplcnUMrojQ8AAemBLUp_WRIXIrAN2G-Kfr5vu8"
 SHEET_NAME = "工作表1"
 
 # Google Sheets 認證
