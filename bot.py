@@ -276,8 +276,30 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def clear_old_connections():
+    """啟動前清除舊的 webhook/連線"""
+    import urllib.request
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        urllib.request.urlopen(url, timeout=10)
+        logger.info("舊連線已清除")
+    except Exception as e:
+        logger.warning(f"清除連線時發生錯誤（可忽略）: {e}")
+
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    clear_old_connections()
+    import time
+    time.sleep(3)  # 等待舊連線完全關閉
+
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .build()
+    )
 
     # 對答 ConversationHandler
     conv_handler = ConversationHandler(
@@ -297,7 +319,10 @@ def main():
     app.add_handler(conv_handler)
 
     logger.info("Bot 啟動中...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message"],
+    )
 
 
 if __name__ == "__main__":
