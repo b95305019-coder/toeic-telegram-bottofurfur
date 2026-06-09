@@ -29,10 +29,19 @@ logger = logging.getLogger(__name__)
 
 def get_sheets_client():
     """取得 Google Sheets 客戶端"""
+    import base64
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
     if not creds_json:
         raise ValueError("GOOGLE_CREDENTIALS 環境變數未設定")
-    creds_dict = json.loads(creds_json)
+    # 支援 Base64 編碼或原始 JSON 兩種格式
+    creds_str = creds_json.strip()
+    try:
+        # 先嘗試 Base64 解碼
+        decoded = base64.b64decode(creds_str).decode("utf-8")
+        creds_dict = json.loads(decoded)
+    except Exception:
+        # 退回直接解析 JSON
+        creds_dict = json.loads(creds_str)
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     return gspread.authorize(creds)
 
