@@ -339,16 +339,24 @@ def start_health_server():
     """啟動 HTTP 健康檢查伺服器 + 定時 self-ping，避免 Render spin down"""
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            # 回傳 bot 實際狀態：只有 bot 真的在跑才回 200
             if _bot_alive:
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"OK")
             else:
-                # 503 讓 UptimeRobot 知道服務有問題
                 self.send_response(503)
                 self.end_headers()
                 self.wfile.write(b"Bot not running")
+
+        def do_HEAD(self):
+            # UptimeRobot 用 HEAD 請求檢查，必須支援
+            if _bot_alive:
+                self.send_response(200)
+                self.end_headers()
+            else:
+                self.send_response(503)
+                self.end_headers()
+
         def log_message(self, format, *args):
             pass  # 靜音 log
 
