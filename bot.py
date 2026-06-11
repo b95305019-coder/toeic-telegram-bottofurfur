@@ -330,13 +330,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# Bot 啟動時間，用來判斷是否健康
+_bot_start_time = None
+_bot_alive = False
+
+
 def start_health_server():
-    """啟動簡單的 HTTP 健康檢查伺服器，避免 Render 誤判 Timeout"""
+    """啟動 HTTP 健康檢查伺服器 + 定時 self-ping，避免 Render spin down"""
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
+            # 回傳 bot 實際狀態：只有 bot 真的在跑才回 200
+            if _bot_alive:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                # 503 讓 UptimeRobot 知道服務有問題
+                self.send_response(503)
+                self.end_headers()
+                self.wfile.write(b"Bot not running")
         def log_message(self, format, *args):
             pass  # 靜音 log
 
@@ -345,6 +357,23 @@ def start_health_server():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     logger.info(f"健康檢查伺服器啟動於 port {port}")
+
+    # Self-ping：每 4 分鐘 ping 自己，防止 Render 因閒置 spin down
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if render_url:
+        def self_ping():
+            while True:
+                time.sleep(240)  # 4 分鐘
+                try:
+                    urllib.request.urlopen(f"{render_url}/", timeout=10)
+                    logger.info("Self-ping OK")
+                except Exception as e:
+                    logger.warning(f"Self-ping 失敗（可忽略）: {e}")
+        ping_thread = threading.Thread(target=self_ping, daemon=True)
+        ping_thread.start()
+        logger.info(f"Self-ping 啟動，目標：{render_url}")
+    else:
+        logger.warning("RENDER_EXTERNAL_URL 未設定，Self-ping 未啟動")
 
 
 def clear_old_connections():
@@ -357,6 +386,7 @@ def clear_old_connections():
 
 
 def main():
+    global _bot_alive
     start_health_server()
     clear_old_connections()
     time.sleep(3)
@@ -387,6 +417,7 @@ def main():
     app.add_handler(conv_handler)
 
     logger.info("Bot 啟動中...")
+    _bot_alive = True
     app.run_polling(
         drop_pending_updates=True,
         allowed_updates=["message"],
