@@ -238,6 +238,38 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
     letters = ["A", "B", "C", "D"]
 
+    # 處理歷史文章選擇
+    if context.user_data.get("waiting_for_history_choice"):
+        try:
+            choice = int(user_input)
+            history_articles = context.user_data.get("history_articles", [])
+            if 1 <= choice <= len(history_articles):
+                selected = history_articles[choice - 1]
+                await update.message.reply_text(
+                    f"📖 已選擇：*{selected['title']}*\n\n"
+                    f"🎯 將按照今日測驗流程進行\n\n"
+                    f"閱讀完畢後按「✅ 開始答題」開始測驗！",
+                    parse_mode="Markdown"
+                )
+                # 建立臨時測驗（只包含此文章）
+                context.user_data["articles"] = [selected]
+                context.user_data["questions"] = selected.get("questions", []) or []
+                context.user_data["current"] = 0
+                context.user_data["correct"] = 0
+                context.user_data["total"] = len(context.user_data["questions"])
+                context.user_data["current_article_idx"] = 0
+                context.user_data["waiting_for_history_choice"] = False
+                
+                # 顯示文章
+                await send_article_content(update, context)
+                return ANSWERING
+            else:
+                await update.message.reply_text("❌ 請輸入有效的數字！")
+                return ANSWERING
+        except ValueError:
+            await update.message.reply_text("❌ 請輸入數字！")
+            return ANSWERING
+
     # 處理「開始答題」按鈕
     if user_input == "✅ 開始答題":
         await send_question(update, context)
@@ -323,11 +355,47 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *使用說明*\n\n"
         "/quiz - 開始今日測驗（先閱讀文章再答題）\n"
         "/articles - 查看今日文章標題\n"
+        "/history - 查看所有歷史文章（最新4篇以外）\n"
         "/stop - 中途停止測驗\n"
         "/help - 顯示此說明\n\n"
         "每天早上 6 點會自動更新新文章！",
         parse_mode="Markdown"
     )
+
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """顯示所有歷史文章（最新4篇以外），讓用戶選擇要做的文章"""
+    await update.message.reply_text("⏳ 載入歷史文章中...")
+    try:
+        all_articles = get_latest_articles(count=100)  # 載入更多文章
+        
+        # 去掉最新的4篇，只顯示歷史文章
+        history_articles = all_articles[4:] if len(all_articles) > 4 else []
+        
+        if not history_articles:
+            await update.message.reply_text("目前沒有歷史文章。")
+            return
+        
+        # 顯示歷史文章列表（前10篇）
+        lines = ["📚 *歷史文章列表*（最新4篇以外）\n"]
+        
+        for i, a in enumerate(history_articles[:10], 1):
+            lines.append(f"{i}. {a['title']}\n   📅 {a['date']}")
+        
+        if len(history_articles) > 10:
+            lines.append(f"\n... 還有 {len(history_articles) - 10} 篇文章")
+        
+        lines.append("\n👉 回覆數字（1-10）選擇要測驗的文章，或輸入 /quiz 回到今日測驗")
+        
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        
+        # 存儲歷史文章供後續選擇
+        context.user_data["history_articles"] = history_articles
+        context.user_data["waiting_for_history_choice"] = True
+        
+    except Exception as e:
+        logger.error(f"history_command error: {e}")
+        await update.message.reply_text(f"❌ 載入失敗：{e}")
 
 
 # Bot 啟動時間，用來判斷是否健康
@@ -339,24 +407,16 @@ def start_health_server():
     """啟動 HTTP 健康檢查伺服器 + 定時 self-ping，避免 Render spin down"""
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
+            # 回傳 bot 實際狀態：只有 bot 真的在跑才回 200
             if _bot_alive:
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"OK")
             else:
+                # 503 讓 UptimeRobot 知道服務有問題
                 self.send_response(503)
                 self.end_headers()
                 self.wfile.write(b"Bot not running")
-
-        def do_HEAD(self):
-            # UptimeRobot 用 HEAD 請求檢查，必須支援
-            if _bot_alive:
-                self.send_response(200)
-                self.end_headers()
-            else:
-                self.send_response(503)
-                self.end_headers()
-
         def log_message(self, format, *args):
             pass  # 靜音 log
 
@@ -422,6 +482,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("articles", articles_command))
+    app.add_handler(CommandHandler("history", history_command))
     app.add_handler(conv_handler)
 
     logger.info("Bot 啟動中...")
