@@ -26,6 +26,7 @@ SCOPES = [
 ]
 
 ANSWERING = 1
+HISTORY_BROWSING = 2
 # ─────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO)
@@ -238,38 +239,6 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
     letters = ["A", "B", "C", "D"]
 
-    # 處理歷史文章選擇
-    if context.user_data.get("waiting_for_history_choice"):
-        try:
-            choice = int(user_input)
-            history_articles = context.user_data.get("history_articles", [])
-            if 1 <= choice <= len(history_articles):
-                selected = history_articles[choice - 1]
-                await update.message.reply_text(
-                    f"📖 已選擇：*{selected['title']}*\n\n"
-                    f"🎯 將按照今日測驗流程進行\n\n"
-                    f"閱讀完畢後按「✅ 開始答題」開始測驗！",
-                    parse_mode="Markdown"
-                )
-                # 建立臨時測驗（只包含此文章）
-                context.user_data["articles"] = [selected]
-                context.user_data["questions"] = selected.get("questions", []) or []
-                context.user_data["current"] = 0
-                context.user_data["correct"] = 0
-                context.user_data["total"] = len(context.user_data["questions"])
-                context.user_data["current_article_idx"] = 0
-                context.user_data["waiting_for_history_choice"] = False
-                
-                # 顯示文章
-                await send_article_content(update, context)
-                return ANSWERING
-            else:
-                await update.message.reply_text("❌ 請輸入有效的數字！")
-                return ANSWERING
-        except ValueError:
-            await update.message.reply_text("❌ 請輸入數字！")
-            return ANSWERING
-
     # 處理「開始答題」按鈕
     if user_input == "✅ 開始答題":
         await send_question(update, context)
@@ -364,38 +333,137 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """顯示所有歷史文章（最新4篇以外），讓用戶選擇要做的文章"""
+    """顯示歷史文章（最新4篇以外），讓用戶選擇"""
     await update.message.reply_text("⏳ 載入歷史文章中...")
     try:
-        all_articles = get_latest_articles(count=100)  # 載入更多文章
-        
-        # 去掉最新的4篇，只顯示歷史文章
+        all_articles = get_latest_articles(count=999)
         history_articles = all_articles[4:] if len(all_articles) > 4 else []
-        
+
         if not history_articles:
-            await update.message.reply_text("目前沒有歷史文章。")
-            return
-        
-        # 顯示歷史文章列表（前10篇）
-        lines = ["📚 *歷史文章列表*（最新4篇以外）\n"]
-        
-        for i, a in enumerate(history_articles[:10], 1):
-            lines.append(f"{i}. {a['title']}\n   📅 {a['date']}")
-        
-        if len(history_articles) > 10:
-            lines.append(f"\n... 還有 {len(history_articles) - 10} 篇文章")
-        
-        lines.append("\n👉 回覆數字（1-10）選擇要測驗的文章，或輸入 /quiz 回到今日測驗")
-        
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-        
-        # 存儲歷史文章供後續選擇
+            await update.message.reply_text("目前沒有歷史文章，請先積累更多文章再來！")
+            return ConversationHandler.END
+
         context.user_data["history_articles"] = history_articles
-        context.user_data["waiting_for_history_choice"] = True
-        
+        context.user_data["history_page"] = 0
+        await send_history_page(update, context)
+        return HISTORY_BROWSING
+
     except Exception as e:
         logger.error(f"history_command error: {e}")
         await update.message.reply_text(f"❌ 載入失敗：{e}")
+        return ConversationHandler.END
+
+
+PAGE_SIZE = 8
+
+async def send_history_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """顯示當前分頁的歷史文章列表"""
+    history_articles = context.user_data["history_articles"]
+    page = context.user_data.get("history_page", 0)
+    total = len(history_articles)
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    page_articles = history_articles[start:end]
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+
+    lines = [f"📚 *歷史文章* （第 {page+1}/{total_pages} 頁，共 {total} 篇）\n"]
+    keyboard = []
+    for i, a in enumerate(page_articles, 1):
+        abs_num = start + i
+        lines.append(f"*{abs_num}.* {a['title']}")
+        if a.get('date'):
+            lines.append(f"   📅 {a['date']}\n")
+        keyboard.append([str(abs_num)])
+
+    # 上一頁 / 下一頁按鈕
+    nav_row = []
+    if page > 0:
+        nav_row.append("⬅️ 上一頁")
+    if end < total:
+        nav_row.append("➡️ 下一頁")
+    if nav_row:
+        keyboard.append(nav_row)
+    keyboard.append(["❌ 取消"])
+
+    lines.append("\n👉 輸入*數字*選擇文章開始測驗")
+
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+
+async def handle_history_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """處理歷史文章選擇"""
+    user_input = update.message.text.strip()
+    history_articles = context.user_data.get("history_articles", [])
+    page = context.user_data.get("history_page", 0)
+    total_pages = (len(history_articles) + PAGE_SIZE - 1) // PAGE_SIZE
+
+    if user_input == "⬅️ 上一頁":
+        context.user_data["history_page"] = max(0, page - 1)
+        await send_history_page(update, context)
+        return HISTORY_BROWSING
+
+    if user_input == "➡️ 下一頁":
+        context.user_data["history_page"] = min(total_pages - 1, page + 1)
+        await send_history_page(update, context)
+        return HISTORY_BROWSING
+
+    if user_input == "❌ 取消":
+        await update.message.reply_text(
+            "已取消。輸入 /history 可再次查看，/quiz 開始今日測驗。",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
+
+    try:
+        choice = int(user_input)
+        if 1 <= choice <= len(history_articles):
+            selected = history_articles[choice - 1]
+
+            if not selected.get("questions"):
+                await update.message.reply_text(
+                    f"❌ 這篇文章沒有題目，請選擇其他文章。",
+                    reply_markup=ReplyKeyboardRemove()
+                )
+                await send_history_page(update, context)
+                return HISTORY_BROWSING
+
+            # 建立臨時測驗（只包含此文章）
+            all_questions = []
+            for q in selected.get("questions", []):
+                all_questions.append({
+                    "article_title": selected["title"],
+                    "q": q["q"],
+                    "options": q["options"],
+                    "ans": q["ans"],
+                })
+
+            context.user_data["articles"] = [selected]
+            context.user_data["questions"] = all_questions
+            context.user_data["current"] = 0
+            context.user_data["correct"] = 0
+            context.user_data["total"] = len(all_questions)
+            context.user_data["current_article_idx"] = 0
+
+            await update.message.reply_text(
+                f"📖 已選擇第 {choice} 篇：\n*{selected['title']}*\n\n"
+                f"共 {len(all_questions)} 題，先閱讀文章再開始答題！",
+                parse_mode="Markdown",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await send_article_content(update, context)
+            return ANSWERING
+        else:
+            await update.message.reply_text(f"❌ 請輸入 1 到 {len(history_articles)} 之間的數字！")
+            return HISTORY_BROWSING
+    except ValueError:
+        await update.message.reply_text("❌ 請輸入數字，或用下方按鈕翻頁。")
+        return HISTORY_BROWSING
+
 
 
 # Bot 啟動時間，用來判斷是否健康
@@ -469,10 +537,17 @@ def main():
     )
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("quiz", quiz_start)],
+        entry_points=[
+            CommandHandler("quiz", quiz_start),
+            CommandHandler("history", history_command),
+        ],
         states={
             ANSWERING: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer),
+                CommandHandler("stop", stop_quiz),
+            ],
+            HISTORY_BROWSING: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_history_choice),
                 CommandHandler("stop", stop_quiz),
             ],
         },
@@ -482,7 +557,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("articles", articles_command))
-    app.add_handler(CommandHandler("history", history_command))
     app.add_handler(conv_handler)
 
     logger.info("Bot 啟動中...")
